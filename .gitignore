@@ -1,0 +1,23 @@
+# 忽略 IDE 相关文件
+*.iml
+*.ipr
+*.iws
+*.idea
+
+# 忽略编译文件
+*.class
+*.log
+*.pyc
+*.pyo
+*.swp
+*.tmp
+*.bak
+*.exe
+*.dll
+*.so
+*.o
+*.a
+
+# 忽略临时文件
+tmp/
+temp/

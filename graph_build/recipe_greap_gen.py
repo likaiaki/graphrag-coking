@@ -15,6 +15,8 @@ import pandas as pd
 import csv
 from datetime import datetime
 
+from pandas import DataFrame
+
 
 @dataclass
 class IngredientInfo:
@@ -767,4 +769,269 @@ class RecipeKnowledgeGraphBuilder:
                 print(f"处理文件失败: {relative_path}")
                 print(e)
         self.save_batch_data(self.current_batch)
+
+    def export_to_csv(self, output_dir: str):
+        """导出为CSV格式"""
+        os.makedirs(output_dir, exist_ok=True)
+
+        # 导出概念
+        concepts_df = pd.DataFrame(self.concepts)
+        concepts_df.to_csv(os.path.join(output_dir, "concepts.csv"),
+                           index=False, encoding='utf-8')
+
+        # 导出关系
+        relationships_df = pd.DataFrame(self.relationships)
+        relationships_df.to_csv(os.path.join(output_dir, "relationships.csv"),
+                                index=False, encoding='utf-8')
+
+        print(f"CSV文件已导出到: {output_dir}")
+        print(f"- 概念数量: {len(self.concepts)}")
+        print(f"- 关系数量: {len(self.relationships)}")
+
+    def merge_all_batches(self):
+        """合并所有批次数据到最终输出文件"""
+        final_concepts = DataFrame()
+        final_relationships = DataFrame()
+        print("合并批次数据...")
+
+        all_concepts = []
+        all_relationships = []
+
+        # 收集所有批次数据
+        batch_dirs = [d for d in os.listdir(self.output_dir)
+                      if d.startswith("batch_") and os.path.isdir(os.path.join(self.output_dir, d))]
+        batch_dirs.sort()
+
+        for batch_dir in batch_dirs:
+            batch_path = os.path.join(self.output_dir, batch_dir)
+
+            # 读取概念文件
+            concepts_file = os.path.join(batch_path, "concepts.csv")
+            if os.path.exists(concepts_file):
+                batch_concepts = pd.read_csv(concepts_file)
+                all_concepts.append(batch_concepts)
+
+            # 读取关系文件
+            relationships_file = os.path.join(batch_path, "relationships.csv")
+            if os.path.exists(relationships_file):
+                batch_relationships = pd.read_csv(relationships_file)
+                all_relationships.append(batch_relationships)
+
+        # 合并数据
+        if all_concepts:
+            final_concepts = pd.concat(all_concepts, ignore_index=True)
+            final_concepts.to_csv(os.path.join(self.output_dir, "concepts.csv"),
+                                  index=False, encoding='utf-8')
+            print(f"合并概念: {len(final_concepts)} 个")
+
+        if all_relationships:
+            final_relationships = pd.concat(all_relationships, ignore_index=True)
+            final_relationships.to_csv(os.path.join(self.output_dir, "relationships.csv"),
+                                       index=False, encoding='utf-8')
+            print(f"合并关系: {len(final_relationships)} 个")
+
+        return len(final_concepts) if all_concepts else 0, len(final_relationships) if all_relationships else 0
+
+    def _format_synonyms_for_neo4j(self, synonyms) -> str:
+        """格式化同义词用于Neo4j导出"""
+        import pandas as pd
+        import json
+
+        # 处理NaN值和空值
+        if pd.isna(synonyms) or not synonyms:
+            return ""
+
+        # 如果是字符串，尝试解析为JSON
+        if isinstance(synonyms, str):
+            if synonyms.strip() == "[]" or synonyms.strip() == "":
+                return ""
+            try:
+                synonyms = json.loads(synonyms)
+            except (json.JSONDecodeError, ValueError):
+                # 如果不是JSON，当作单个同义词处理
+                return synonyms.strip()
+
+        # 如果不是列表，返回空字符串
+        if not isinstance(synonyms, (list, tuple)):
+            return ""
+
+        formatted_terms = []
+        for synonym_data in synonyms:
+            if isinstance(synonym_data, dict):
+                # 新格式：包含语言信息
+                term = synonym_data.get('term', '')
+                lang = synonym_data.get('language', 'zh')
+                if term:
+                    formatted_terms.append(f"{term}({lang})")
+            else:
+                # 兼容旧格式：纯字符串
+                if synonym_data and str(synonym_data).strip():
+                    formatted_terms.append(str(synonym_data).strip())
+
+        return "|".join(formatted_terms)
+
+    def export_to_neo4j_csv(self, output_dir: str, merge_batches: bool = True):
+        """导出为Neo4j导入格式的CSV - 支持合并批次数据"""
+        os.makedirs(output_dir, exist_ok=True)
+
+        # 如果需要合并批次数据
+        final_concepts = []
+        final_relationships = []
+
+        if merge_batches:
+            # 先尝试合并所有批次数据
+            total_concepts, total_relationships = self.merge_all_batches()
+
+            # 如果有合并的数据，使用合并后的数据
+            if total_concepts > 0:
+                concepts_df = pd.read_csv(os.path.join(output_dir, "concepts.csv"))
+                final_concepts = concepts_df.to_dict('records')
+            else:
+                final_concepts = self.concepts
+
+            if total_relationships > 0:
+                relationships_df = pd.read_csv(os.path.join(output_dir, "relationships.csv"))
+                final_relationships = relationships_df.to_dict('records')
+            else:
+                final_relationships = self.relationships
+        else:
+            # 使用当前内存中的数据
+            final_concepts = self.concepts
+            final_relationships = self.relationships
+
+        # 准备节点数据
+        nodes_data = []
+
+        # 首先添加预定义概念
+        for predefined_concept in self.predefined_concepts:
+            node = {
+                "nodeId": predefined_concept["concept_id"],
+                "labels": predefined_concept["concept_type"],
+                "name": predefined_concept["name"],
+                "preferredTerm": predefined_concept.get("preferred_term", ""),
+                "fsn": predefined_concept.get("fsn", ""),
+                "conceptType": predefined_concept["concept_type"],
+                "synonyms": self._format_synonyms_for_neo4j(predefined_concept.get("synonyms", []))
+            }
+            nodes_data.append(node)
+
+        # 然后添加动态生成的概念
+        for concept in final_concepts:
+            node = {
+                "nodeId": concept["concept_id"],
+                "labels": concept["concept_type"],
+                "name": concept["name"],
+                "preferredTerm": concept.get("preferred_term", ""),
+                "category": concept.get("category", ""),
+                "conceptType": concept["concept_type"],
+                "synonyms": self._format_synonyms_for_neo4j(concept.get("synonyms", []))
+            }
+
+            # 添加特定类型的属性
+            if concept["concept_type"] == "Recipe":
+                node.update({
+                    "difficulty": concept.get("difficulty", ""),
+                    "cuisineType": concept.get("cuisine_type", ""),
+                    "prepTime": concept.get("prep_time", ""),
+                    "cookTime": concept.get("cook_time", ""),
+                    "servings": concept.get("servings", ""),
+                    "tags": concept.get("tags", ""),
+                    "filePath": concept.get("file_path", "")
+                })
+            elif concept["concept_type"] == "Ingredient":
+                node.update({
+                    "amount": concept.get("amount", ""),
+                    "unit": concept.get("unit", ""),
+                    "isMain": concept.get("is_main", "")
+                })
+            elif concept["concept_type"] == "CookingStep":
+                node.update({
+                    "description": concept.get("description", ""),
+                    "stepNumber": concept.get("step_number", ""),
+                    "methods": concept.get("methods", ""),
+                    "tools": concept.get("tools", ""),
+                    "timeEstimate": concept.get("time_estimate", "")
+                })
+
+            nodes_data.append(node)
+
+        # 导出节点
+        nodes_df = pd.DataFrame(nodes_data)
+        nodes_df.to_csv(os.path.join(output_dir, "nodes.csv"),
+                        index=False, encoding='utf-8')
+
+        # 准备关系数据
+        relationships_data = []
+        for rel in final_relationships:
+            relationship = {
+                "startNodeId": rel["source_id"],
+                "endNodeId": rel["target_id"],
+                "relationshipType": rel["relationship_type"],
+                "relationshipId": rel["relationship_id"]
+            }
+
+            # 添加额外属性
+            for key, value in rel.items():
+                if key not in ["source_id", "target_id", "relationship_type", "relationship_id"]:
+                    relationship[key] = value
+
+            relationships_data.append(relationship)
+
+        # 导出关系
+        relationships_df = pd.DataFrame(relationships_data)
+        relationships_df.to_csv(os.path.join(output_dir, "relationships.csv"),
+                                index=False, encoding='utf-8')
+
+        # 生成Neo4j导入脚本
+        import_script = f"""
+// Neo4j 数据导入脚本
+
+// 导入节点
+LOAD CSV WITH HEADERS FROM 'file:///nodes.csv' AS row
+CREATE (n:Concept)
+SET n.nodeId = row.nodeId,
+    n.name = row.name,
+    n.preferredTerm = row.preferredTerm,
+    n.category = row.category,
+    n.conceptType = row.conceptType,
+    n.difficulty = toInteger(row.difficulty),
+    n.cuisineType = row.cuisineType,
+    n.prepTime = row.prepTime,
+    n.cookTime = row.cookTime,
+    n.servings = row.servings,
+    n.tags = row.tags,
+    n.filePath = row.filePath,
+    n.amount = row.amount,
+    n.unit = row.unit,
+    n.isMain = toBoolean(row.isMain),
+    n.description = row.description,
+    n.stepNumber = toInteger(row.stepNumber),
+    n.methods = row.methods,
+    n.tools = row.tools,
+    n.timeEstimate = row.timeEstimate;
+
+// 创建索引
+CREATE INDEX concept_id_index IF NOT EXISTS FOR (c:Concept) ON (c.nodeId);
+CREATE INDEX concept_name_index IF NOT EXISTS FOR (c:Concept) ON (c.name);
+CREATE INDEX concept_category_index IF NOT EXISTS FOR (c:Concept) ON (c.category);
+
+// 导入关系
+LOAD CSV WITH HEADERS FROM 'file:///relationships.csv' AS row
+MATCH (start:Concept {{nodeId: row.startNodeId}})
+MATCH (end:Concept {{nodeId: row.endNodeId}})
+CALL apoc.create.relationship(start, row.relationshipType, {{
+    relationshipId: row.relationshipId,
+    amount: row.amount,
+    unit: row.unit,
+    stepOrder: toInteger(row.step_order)
+}}, end) YIELD rel
+RETURN count(rel);
+"""
+
+        with open(os.path.join(output_dir, "neo4j_import.cypher"), 'w', encoding='utf-8') as f:
+            f.write(import_script)
+
+        print(f"Neo4j CSV文件已导出到: {output_dir}")
+        print(f"- 节点数量: {len(nodes_data)}")
+        print(f"- 关系数量: {len(relationships_data)}")
 

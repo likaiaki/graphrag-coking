@@ -3,7 +3,7 @@
 """
 基于Kimi API的智能菜谱解析AI Agent
 """
-
+import glob
 import os
 import json
 import re
@@ -264,6 +264,7 @@ class RecipeKnowledgeGraphBuilder:
     """菜谱知识图谱构建器"""
 
     def __init__(self, ai_agent: KimiRecipeParser, output_dir: str = "./ai_output", batch_size: int = 20):
+        self.current_batch = 0
         self.ai_agent = ai_agent
         self.output_dir = output_dir
         self.batch_size = batch_size
@@ -713,5 +714,57 @@ class RecipeKnowledgeGraphBuilder:
 
         return recipe_concept
 
+    def save_batch_data(self, batch_num: int = None):
+        """保存当前批次数据"""
+        if batch_num is None:
+            batch_num = self.current_batch
 
+        batch_output_dir = os.path.join(self.output_dir, f"batch_{batch_num:03d}")
+        os.makedirs(batch_output_dir, exist_ok=True)
+
+        # 保存概念数据
+        if self.concepts:
+            concepts_df = pd.DataFrame(self.concepts)
+            concepts_file = os.path.join(batch_output_dir, "concepts.csv")
+            concepts_df.to_csv(concepts_file, index=False, encoding='utf-8')
+
+        # 保存关系数据
+        if self.relationships:
+            relationships_df = pd.DataFrame(self.relationships)
+            relationships_file = os.path.join(batch_output_dir, "relationships.csv")
+            relationships_df.to_csv(relationships_file, index=False, encoding='utf-8')
+
+        print(f"批次 {batch_num} 已保存")
+
+        return batch_output_dir
+
+    def batch_process_recipes(self, recipe_dir: str) -> Tuple[int, int]:
+        """
+        量处理菜谱目录
+        :param recipe_dir:
+        :return:
+        """
+        # 扫描dishes目录
+        dishes_dir = os.path.join(recipe_dir, "dishes")
+        if not os.path.exists(dishes_dir):
+            # 如果没有dishes目录，则扫描整个目录（向后兼容）
+            dishes_dir = recipe_dir
+            print(f"未找到dishes目录，扫描整个目录: {recipe_dir}")
+        else:
+            print(f"扫描菜谱目录: {dishes_dir}")
+
+        recipe_files = glob.glob(os.path.join(dishes_dir, "**/*.md"), recursive=True)
+        for i, recipe_file in enumerate(recipe_files):
+            try:
+                with open(recipe_file, 'r', encoding='utf-8') as f:
+                    content = f.read()
+
+                relative_path = os.path.relpath(recipe_file, recipe_dir)
+                print(f"处理文件lkk: {relative_path}")
+                # 处理菜谱
+                self.process_recipe(content, relative_path)
+            except Exception as e:
+                print(f"处理文件失败: {relative_path}")
+                print(e)
+        self.save_batch_data(self.current_batch)
 

@@ -738,7 +738,7 @@ class RecipeKnowledgeGraphBuilder:
 
         return batch_output_dir
 
-    def batch_process_recipes(self, recipe_dir: str) -> Tuple[int, int]:
+    def batch_process_recipes(self, recipe_dir: str):
         """
         量处理菜谱目录
         :param recipe_dir:
